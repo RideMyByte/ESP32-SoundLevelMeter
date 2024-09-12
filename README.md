@@ -1,4 +1,4 @@
-# Sound Level Meter with Arduino IDE, ESP32 and I<sup>2</sup>S MEMS microphone
+# Sound Level Meter with ESP32 and I<sup>2</sup>S MEMS microphone
 
 Arduino/ESP32 Sound Level Meter (SLM) using inexpensive, factory calibrated, digital I2S MEMS microphone and digital IIR filters (vs. FFT) for equalization and weighting.
 
