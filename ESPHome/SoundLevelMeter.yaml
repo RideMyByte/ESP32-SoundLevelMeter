@@ -1,0 +1,303 @@
+esphome:
+  name: soundlevelmeter
+  friendly_name: SoundLevelMeter
+
+esp32:
+  board: seeed_xiao_esp32s3
+  variant: esp32s3
+  framework:
+    type: arduino
+    version: latest
+    platform_version: 6.3.2
+
+external_components:
+  - source: github://stas-sl/esphome-sound-level-meter  # add @tag if you want to use a specific version (e.g @v1.0.0)
+
+i2s:
+  bck_pin: GPIO7    # D8   GPIO7  SCK         #define I2S_SCK D8
+  ws_pin: GPIO9     # D10  GPIO9             #define I2S_WS D10
+  din_pin: GPIO8    # D9   GPIO8  SD          #define I2S_SD D9
+  sample_rate: 48000            # default: 48000
+  bits_per_sample: 32           # default: 32
+  dma_buf_count: 8              # default: 8
+  dma_buf_len: 256              # default: 256
+  use_apll: true                # default: false
+
+  # according to datasheet when L/R pin is connected to GND,
+  # the mic should output its signal in the left channel,
+  # however in my experience it's the opposite: when I connect
+  # L/R to GND then the signal is in the right channel
+  channel: left                # default: right
+
+  # right shift samples.
+  # for example if mic has 24 bit resolution, and
+  # i2s configured as 32 bits, then audio data will be aligned left (MSB)
+  # and LSB will be padded with zeros, so you might want to shift them right by 8 bits
+  bits_shift: 8                 # default: 0
+
+sound_level_meter:
+  id: sound_level_meter1
+
+  # update_interval specifies over which interval to aggregate audio data
+  # you can specify default update_interval on top level, but you can also override
+  # it further by specifying it on sensor level
+  update_interval: 1s           # default: 60s
+
+  # you can disable (turn off) component by default (on boot)
+  # and turn it on later when needed via sound_level_meter.turn_on/toggle actions;
+  # when used with switch it might conflict/being overriden by
+  # switch state restoration logic, so you have to either disable it in
+  # switch config and then is_on property here will have effect, 
+  # or completely rely on switch state restoration/initialization and 
+  # any value set here will be ignored
+  is_on: true                   # default: true
+
+  # buffer_size is in samples (not bytes), so for float data type
+  # number of bytes will be buffer_size * 4
+  buffer_size: 1024             # default: 1024
+
+  # ignore audio data at startup for this long
+  warmup_interval: 500ms        # default: 500ms
+
+  # audio processing runs in a separate task, you can change its settings below
+  task_stack_size: 4096         # default: 4096
+  task_priority: 2              # default: 2
+  task_core: 1                  # default: 1
+
+  # see your mic datasheet to find sensitivity and reference SPL.
+  # those are used to convert dB FS to db SPL
+  mic_sensitivity: -26dB        # default: empty
+  mic_sensitivity_ref: 94dB     # default: empty
+  # additional offset if needed
+  offset: 0dB                   # default: empty
+
+  # for flexibility sensors are organized hierarchically into groups. each group
+  # could have any number of filters, sensors and nested groups.
+  # for examples if there is a top level group A with filter A and nested group B
+  # with filter B, then for sensors inside group B filters A and then B will be
+  # applied:
+  # groups:
+  #   # group A
+  #   - filters:
+  #       - filter A
+  #     groups:
+  #       # group B
+  #       - filters:
+  #           - filter B
+  #         sensors:
+  #           - sensor X
+  groups:
+    # group 1 (mic eq)
+    - filters:
+        # for now only SOS filter type is supported, see math/filter-design.ipynb
+        # to learn how to create or convert other filter types to SOS
+        - type: sos
+          coeffs:
+            - [ 0.47732642 ,   0.46294358 ,   0.11224797 ,   0.06681948 ,   0.0011152199]
+            - [ 1.         ,  -1.9890593  ,   0.98908925 ,  -1.9975533  ,   0.9975549   ]
+
+      # nested groups
+      groups:
+        # group 1.1 (no weighting)
+        - sensors:
+            # 'eq' type sensor calculates Leq (average) sound level over specified period
+            - type: eq
+              name: LZeq_1s
+              id: LZeq_1s
+              # you can override updated_interval specified on top level
+              # individually per each sensor
+              update_interval: 1s
+
+            # you can have as many sensors of same type, but with different
+            # other parameters (e.g. update_interval) as needed
+            - type: eq
+              name: LZeq_1min
+              id: LZeq_1min
+              unit_of_measurement: dBZ
+
+            # 'max' sensor type calculates Lmax with specified window_size.
+            # for example, if update_interval is 60s and window_size is 1s
+            # then it will calculate 60 Leq values for each second of audio data
+            # and the result will be max of them
+            - type: max
+              name: LZmax_1s_1min
+              id: LZmax_1s_1min
+              window_size: 1s
+              unit_of_measurement: dBZ
+
+            # same as 'max', but 'min'
+            - type: min
+              name: LZmin_1s_1min
+              id: LZmin_1s_1min
+              window_size: 1s
+              unit_of_measurement: dBZ
+
+            # it finds max single sample over whole update_interval
+            - type: peak
+              name: LZpeak_1min
+              id: LZpeak_1min
+              unit_of_measurement: dBZ
+
+        # group 1.2 (A-weighting)
+        - filters:
+            # for now only SOS filter type is supported, see math/filter-design.ipynb
+            # to learn how to create or convert other filter types to SOS
+            - type: sos
+              coeffs:
+                # A-weighting:
+                #       b0           b1            b2             a1            a2
+                - [ 0.16999495 ,  0.741029   ,  0.52548885 , -0.11321865 , -0.056549273]
+                - [ 1.         , -2.00027    ,  1.0002706  , -0.03433284 , -0.79215795 ]
+                - [ 1.         , -0.709303   , -0.29071867 , -1.9822421  ,  0.9822986  ]
+          sensors:
+            - type: eq
+              name: LAeq_1min
+              id: LAeq_1min
+              unit_of_measurement: dBA
+            - type: max
+              name: LAmax_1s_1min
+              id: LAmax_1s_1min
+              window_size: 1s
+              unit_of_measurement: dBA
+            - type: min
+              name: LAmin_1s_1min
+              id: LAmin_1s_1min
+              window_size: 1s
+              unit_of_measurement: dBA
+            - type: peak
+              name: LApeak_1min
+              id: LApeak_1min
+              unit_of_measurement: dBA
+
+        # group 1.3 (C-weighting)
+        - filters:
+            # for now only SOS filter type is supported, see math/filter-design.ipynb
+            # to learn how to create or convert other filter types to SOS
+            - type: sos
+              coeffs:
+                # C-weighting:
+                #       b0             b1             b2             a1             a2
+                - [-0.49651518  , -0.12296628  , -0.0076134163, -0.37165618   , 0.03453208  ]
+                - [ 1.          ,  1.3294908   ,  0.44188643  ,  1.2312505    , 0.37899444  ]
+                - [ 1.          , -2.          ,  1.          , -1.9946145    , 0.9946217   ]
+          sensors:
+            - type: eq
+              name: LCeq_1min
+              id: LCeq_1min
+              unit_of_measurement: dBC
+            - type: max
+              name: LCmax_1s_1min
+              id: LCmax_1s_1min
+              window_size: 1s
+              unit_of_measurement: dBC
+            - type: min
+              name: LCmin_1s_1min
+              id: LCmin_1s_1min
+              window_size: 1s
+              unit_of_measurement: dBC
+            - type: peak
+              name: LCpeak_1min
+              id: LCpeak_1min
+              unit_of_measurement: dBC
+
+
+light:
+  - platform: neopixelbus
+    type: GRB
+    variant: WS2811
+    pin: GPIO1 # D0
+    num_leds: 1
+    name: "NeoPixel"
+    id: led_light
+    effects: 
+      - addressable_lambda:
+          name: Sound2Light
+          update_interval: 5s
+          lambda: |-
+            if (id(LCpeak_1min).state >= 85) {
+              it[0] = ESPColor(255,0,0);
+            } else if (id(LCpeak_1min).state >= 80) {
+              it[0] = ESPColor(255,128,0);
+            } else if (id(LCpeak_1min).state >= 75) {
+              it[0] = ESPColor(0,0,255);
+            } else {
+              it[0] = ESPColor(0,255,0);
+            }
+
+
+
+font:
+  - file: 'slkscr.ttf'
+    id: font1
+    size: 8
+
+  - file: 'BebasNeue-Regular.ttf'
+    id: font2
+    size: 48
+
+  - file: 'Arial.ttf'
+    id: font3
+    size: 12
+
+  - file: 'Arial.ttf'
+    id: font4
+    size: 16
+
+i2c:
+  sda: GPIO5
+  scl: GPIO6
+  scan: false
+
+display:
+  - platform: ssd1306_i2c
+    model: "SSD1306 128x64"
+#   reset_pin: 7
+    address: 0x3C
+    lambda: |-
+      float laeq = id(LAeq_1min).state; // Get the LAeq value
+      int line_length = (int)((laeq - 50.0) * 2.56); // Scale value between 50 and 100 to a line length of 0 to 128
+      
+      if(line_length < 0) line_length = 0; // Ensure line length is not negative
+      if(line_length > 128) line_length = 128; // Ensure line length does not exceed display width
+
+      // Draw the line
+      it.line(0, 0, line_length, 0);
+      it.line(0, 1, line_length+2, 1);
+      it.line(0, 2, line_length+4, 2);
+      it.line(0, 3, line_length+2, 3);
+      it.line(0, 4, line_length, 4);
+
+      it.printf(0, 14, id(font4), "LAeq:   %.1f dBA", id(LAeq_1min).state);
+      it.printf(0, 32, id(font3), "LAmax:    %.1f dBA", id(LAmax_1s_1min).state);
+      it.printf(0, 48, id(font3), "LApeak:   %.1f dBA", id(LApeak_1min).state);
+
+sensor:
+  - platform: wifi_signal
+    name: "WiFi Signal Sensor"
+    id: wifi_rssi
+    update_interval: 60s
+
+
+# Enable logging
+logger:
+  level: DEBUG
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: "oQIi4mFBsJFUfrY9+Z16ox5bvNvIQdtrTZh2svV7tXo="
+
+ota:
+  password: "402bc9d380d5ff277c2ca9e3acde2db2"
+
+wifi:
+  ssid: Halle1
+  password: Halle1WiFi1ellaH
+
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: "Soundlevelmeter Fallback Hotspot"
+    password: "10wfRQ6oRSt0"
+
+captive_portal:
+    
